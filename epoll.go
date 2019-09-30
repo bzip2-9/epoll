@@ -149,6 +149,7 @@ func (me *Epoll) events() {
 			return
 		}
 
+		me.Lock()
 		if me.nthreads == 1 {
 			for _, ev := range evList {
 
@@ -166,6 +167,7 @@ func (me *Epoll) events() {
 				}
 			}
 		}
+		me.Unlock()
 	}
 }
 
