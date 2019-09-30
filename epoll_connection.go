@@ -4,26 +4,36 @@ import (
 	"net"
 )
 
-type EpollFuncAction int
+// FuncConn defines function signature to callback when there is events (net.TCPConn key)
+type FuncConn func(*net.TCPConn, interface{}) FuncAction
+
+// FuncFD defines function signature to callback when there is events (fd key)
+type FuncFD func(int, interface{}) FuncAction
+
+// FuncAction - value returned by event callback
+type FuncAction int
 
 const (
-	EpollContinue EpollFuncAction = 1
-	EpollStop     EpollFuncAction = 2
-	EpollDestroy  EpollFuncAction = 3
+	// CONTINUE - fd will remain in management
+	CONTINUE FuncAction = 1
+	// STOP - fd should be removed from management
+	STOP FuncAction = 2
+	// DESTROY - fd should be removed from management, and must be closed
+	DESTROY FuncAction = 3
 )
 
 type epollConnection struct {
 	connection *net.TCPConn
 	fd         int
-	userData   interface{}
+	customData interface{}
 	oneshot    bool
-	f          Func
+	callFConn  bool
+	fConn      FuncConn
+	fFD        FuncFD
 }
 
+// Close connection
 func (me *epollConnection) Close() {
 	me.connection.Close()
-	me.userData = nil
+	me.customData = nil
 }
-
-// Func defines function signature to callback when there is events
-type Func func(*net.TCPConn, interface{}) EpollFuncAction
