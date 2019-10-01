@@ -166,13 +166,12 @@ func (me *Epoll) Del(connection interface{}, close bool) {
 	me.Lock()
 	defer me.Unlock()
 
-	switch connection.(type) {
+	switch conn := connection.(type) {
 	case int:
-		fdSocket = connection.(int)
+		fdSocket = conn
 		kind = FD
 
 	case *net.Conn:
-		conn := connection.(*net.Conn)
 		tcp = (*conn).(*net.TCPConn)
 		handle, _ := tcp.SyscallConn()
 
@@ -183,7 +182,7 @@ func (me *Epoll) Del(connection interface{}, close bool) {
 		})
 
 	case *net.TCPConn:
-		tcp = connection.(*net.TCPConn)
+		tcp = conn
 		handle, _ := tcp.SyscallConn()
 
 		handle.Control(func(fd uintptr) {
@@ -194,7 +193,7 @@ func (me *Epoll) Del(connection interface{}, close bool) {
 		kind = CONN
 
 	case *net.Listener:
-		ltcp = connection.(*net.TCPListener)
+		ltcp = (*conn).(*net.TCPListener)
 		handle, _ := ltcp.SyscallConn()
 
 		handle.Control(func(fd uintptr) {
@@ -241,9 +240,6 @@ func (me *Epoll) Del(connection interface{}, close bool) {
 	}
 
 	me.Unlock()
-
-	tcp.Close()
-
 }
 
 // eventLoopSingleThread  => thread created when epoll.Create(1)
