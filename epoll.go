@@ -147,7 +147,7 @@ func (me *Epoll) Add(connection interface{}, customData interface{}, events int,
 
 	uptr := uint64((uintptr)(unsafe.Pointer(newConnection)))
 
-	event := unix.EpollEvent{Events: uint32(events), Fd: int32(uptr & 0xFFFF), Pad: int32(uptr >> 32)}
+	event := unix.EpollEvent{Events: uint32(events), Fd: int32(uptr & 0xFFFFFFFF), Pad: int32(uptr >> 32)}
 
 	unix.EpollCtl(me.fd, unix.EPOLL_CTL_ADD, fdSocket, &event)
 
@@ -171,17 +171,9 @@ func (me *Epoll) Del(connection interface{}, close bool) {
 		fdSocket = connection.(int)
 		kind = FD
 
-	case *net.Conn, *net.TCPConn:
-		tcp = connection.(*net.TCPConn)
-		kind = CONN
-
-	case *net.Listener, *net.TCPListener:
-		ltcp = connection.(*net.TCPListener)
-		kind = LISTENER
-
-	}
-
-	if kind != FD {
+	case *net.Conn:
+		conn := connection.(*net.Conn)
+		tcp = (*conn).(*net.TCPConn)
 		handle, _ := tcp.SyscallConn()
 
 		handle.Control(func(fd uintptr) {
@@ -189,6 +181,41 @@ func (me *Epoll) Del(connection interface{}, close bool) {
 			// fdSocket = *ptr
 			fdSocket = int(fd)
 		})
+
+	case *net.TCPConn:
+		tcp = connection.(*net.TCPConn)
+		handle, _ := tcp.SyscallConn()
+
+		handle.Control(func(fd uintptr) {
+			// ptr := (*int)(unsafe.Pointer(fd))
+			// fdSocket = *ptr
+			fdSocket = int(fd)
+		})
+		kind = CONN
+
+	case *net.Listener:
+		ltcp = connection.(*net.TCPListener)
+		handle, _ := ltcp.SyscallConn()
+
+		handle.Control(func(fd uintptr) {
+			// ptr := (*int)(unsafe.Pointer(fd))
+			// fdSocket = *ptr
+			fdSocket = int(fd)
+		})
+		kind = LISTENER
+
+	case *net.TCPListener:
+		ltcp = connection.(*net.TCPListener)
+		handle, _ := ltcp.SyscallConn()
+
+		handle.Control(func(fd uintptr) {
+			// ptr := (*int)(unsafe.Pointer(fd))
+			// fdSocket = *ptr
+			fdSocket = int(fd)
+		})
+
+		kind = LISTENER
+
 	}
 
 	me.Lock()
@@ -225,6 +252,7 @@ func (me *Epoll) eventLoopSingleThread() {
 	var evList []unix.EpollEvent
 	var u64 uint64
 
+	evList = append(evList, unix.EpollEvent{})
 	for {
 
 		_, err := unix.EpollWait(me.fd, evList, -1)
@@ -261,6 +289,8 @@ func (me *Epoll) eventLoopSingleThread() {
 func (me *Epoll) EventLoopNoThread() {
 
 	var evList []unix.EpollEvent
+	evList = append(evList, unix.EpollEvent{})
+
 	var u64 uint64
 
 	for {
