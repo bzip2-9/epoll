@@ -15,7 +15,9 @@ const (
 // UserObject - Interface Objects from User must obey
 type UserObject interface {
 	GetFD() int
+	GetFD0() int
+	GetFD1() int
 	Ptr() uintptr
 	Close()
-	Event(events uint32) FuncAction // same constants EPOLL*, ORed
+	Event(uo *UserObject, events uint32) FuncAction // same constants EPOLL*, ORed
 }

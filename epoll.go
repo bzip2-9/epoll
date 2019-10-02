@@ -55,18 +55,18 @@ func Create(nthreads uint) (*Epoll, error) {
 }
 
 // Add new connection to the epoll set - net.TCPConn
-func (me *Epoll) Add(obj UserObject, events int) {
+func (me *Epoll) Add(obj *UserObject, events int) {
 
-	uptr := obj.Ptr()
+	uptr := (uintptr)(unsafe.Pointer(obj))
 
 	event := unix.EpollEvent{Events: uint32(events), Fd: int32(uptr & 0xFFFFFFFF), Pad: int32(uptr >> 32)}
 
-	unix.EpollCtl(me.fd, unix.EPOLL_CTL_ADD, obj.GetFD(), &event)
+	unix.EpollCtl(me.fd, unix.EPOLL_CTL_ADD, (*obj).GetFD(), &event)
 }
 
 // Del removes connection (net.TCPConn) from the epoll set
-func (me *Epoll) Del(obj UserObject) {
-	unix.EpollCtl(me.fd, unix.EPOLL_CTL_DEL, obj.GetFD(), nil)
+func (me *Epoll) Del(obj *UserObject) {
+	unix.EpollCtl(me.fd, unix.EPOLL_CTL_DEL, (*obj).GetFD(), nil)
 }
 
 // eventLoopSingleThread  => thread created when epoll.Create(1)
@@ -88,12 +88,17 @@ func (me *Epoll) eventLoopSingleThread() {
 
 			u64 = uint64(ev.Fd) + (uint64(ev.Pad) << 32)
 			uptr := uintptr(u64)
-			obj := (*UserObject)(unsafe.Pointer(uptr))
-			ret := (*obj).Event(ev.Events)
 
-			if ret == EXIT {
-				me.Del(*obj)
+			ptr := (*UserObject)(unsafe.Pointer(uptr))
+			switch obj := (*ptr).(type) {
+			default:
+				ret := obj.Event(ptr, ev.Events)
+				if ret == EXIT {
+					me.Del(ptr)
+				}
+
 			}
+			//ret := (*obj).Event(ev.Events)
 		}
 	}
 }
