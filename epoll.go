@@ -1,8 +1,6 @@
 package epoll
 
 import (
-	"net"
-	"sync"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -25,13 +23,9 @@ const (
 
 // Epoll represents an epoll set
 type Epoll struct {
-	fd       int
-	mutex    sync.Mutex
-	mutexTid int
+	fd int
 	// nthreads - default 1 (single thread), threads to dispatch event, not to wait
 	nthreads uint
-	// connections - hold structures so GC doesn't destroy them
-	connections map[int]*Connection
 }
 
 // Create creates new epoll set
@@ -51,7 +45,7 @@ func Create(nthreads uint) (*Epoll, error) {
 		nthreads = 1
 	}
 
-	ep := &Epoll{fd: fd, mutexTid: 0, nthreads: nthreads, connections: make(map[int]*Connection)}
+	ep := &Epoll{fd: fd, nthreads: nthreads}
 
 	if nthreads > 0 {
 		go ep.eventLoopSingleThread()
@@ -60,186 +54,20 @@ func Create(nthreads uint) (*Epoll, error) {
 	return ep, nil
 }
 
-// Lock epoll set
-func (me *Epoll) Lock() {
-
-	if me.nthreads == 0 {
-		return
-	}
-	tid := unix.Gettid()
-
-	// Prevent self-blocking
-	if tid == me.mutexTid {
-		return
-	}
-
-	me.mutex.Lock()
-	me.mutexTid = tid
-
-}
-
-// Unlock epoll set
-func (me *Epoll) Unlock() {
-	if me.nthreads == 0 {
-		return
-	}
-	tid := unix.Gettid()
-
-	// Prevent one thread unblock mutex owned by another thread
-	if tid != me.mutexTid {
-		return
-	}
-
-	me.mutexTid = 0
-	me.mutex.Unlock()
-}
-
 // Add new connection to the epoll set - net.TCPConn
-func (me *Epoll) Add(connection interface{}, customData interface{}, events int, f Func) bool {
-	var tcp *net.TCPConn
-	var ltcp *net.TCPListener
-	var fdSocket int
-	var kind connectionType
-	var newConnection *Connection
+func (me *Epoll) Add(obj *UserObject, events int) {
 
-	oneshot := false
-	if (events & EPOLLONESHOT) > 0 {
-		oneshot = true
-	}
-
-	switch connection.(type) {
-
-	case int:
-		fdSocket = connection.(int)
-		kind = FD
-		newConnection = &Connection{connection: fdSocket, customData: customData, f: f, oneshot: oneshot, fd: fdSocket, kind: kind}
-
-	case *net.Conn, *net.TCPConn:
-		tcp = (connection).(*net.TCPConn)
-		handle, _ := tcp.SyscallConn()
-
-		handle.Control(func(fd uintptr) {
-			// ptr := (*int)(unsafe.Pointer(fd))
-			// fdSocket = *ptr
-			fdSocket = int(fd)
-		})
-		kind = CONN
-		newConnection = &Connection{connection: tcp, customData: customData, f: f, oneshot: oneshot, fd: fdSocket, kind: kind}
-
-	case *net.Listener, *net.TCPListener:
-		ltcp = connection.(*net.TCPListener)
-		handle, _ := ltcp.SyscallConn()
-
-		handle.Control(func(fd uintptr) {
-			// ptr := (*int)(unsafe.Pointer(fd))
-			// fdSocket = *ptr
-			fdSocket = int(fd)
-		})
-		kind = LISTENER
-		newConnection = &Connection{connection: ltcp, customData: customData, f: f, oneshot: oneshot, fd: fdSocket, kind: kind}
-
-	default:
-		return false
-	}
-
-	me.Lock()
-	me.connections[fdSocket] = newConnection
-
-	uptr := uint64((uintptr)(unsafe.Pointer(newConnection)))
+	uptr := uint64((uintptr)(unsafe.Pointer(obj)))
 
 	event := unix.EpollEvent{Events: uint32(events), Fd: int32(uptr & 0xFFFFFFFF), Pad: int32(uptr >> 32)}
 
-	unix.EpollCtl(me.fd, unix.EPOLL_CTL_ADD, fdSocket, &event)
+	unix.EpollCtl(me.fd, unix.EPOLL_CTL_ADD, (*obj).GetFD(), &event)
 
-	me.Unlock()
-
-	return true
 }
 
 // Del removes connection (net.TCPConn) from the epoll set
-func (me *Epoll) Del(connection interface{}, close bool) {
-	var fdSocket int
-	var tcp *net.TCPConn
-	var ltcp *net.TCPListener
-	var kind connectionType
-
-	me.Lock()
-	defer me.Unlock()
-
-	switch conn := connection.(type) {
-	case int:
-		fdSocket = conn
-		kind = FD
-
-	case *net.Conn:
-		tcp = (*conn).(*net.TCPConn)
-		handle, _ := tcp.SyscallConn()
-
-		handle.Control(func(fd uintptr) {
-			// ptr := (*int)(unsafe.Pointer(fd))
-			// fdSocket = *ptr
-			fdSocket = int(fd)
-		})
-
-	case *net.TCPConn:
-		tcp = conn
-		handle, _ := tcp.SyscallConn()
-
-		handle.Control(func(fd uintptr) {
-			// ptr := (*int)(unsafe.Pointer(fd))
-			// fdSocket = *ptr
-			fdSocket = int(fd)
-		})
-		kind = CONN
-
-	case *net.Listener:
-		ltcp = (*conn).(*net.TCPListener)
-		handle, _ := ltcp.SyscallConn()
-
-		handle.Control(func(fd uintptr) {
-			// ptr := (*int)(unsafe.Pointer(fd))
-			// fdSocket = *ptr
-			fdSocket = int(fd)
-		})
-		kind = LISTENER
-
-	case *net.TCPListener:
-		ltcp = connection.(*net.TCPListener)
-		handle, _ := ltcp.SyscallConn()
-
-		handle.Control(func(fd uintptr) {
-			// ptr := (*int)(unsafe.Pointer(fd))
-			// fdSocket = *ptr
-			fdSocket = int(fd)
-		})
-
-		kind = LISTENER
-
-	}
-
-	me.Lock()
-
-	_, found := me.connections[fdSocket]
-
-	if found {
-		delete(me.connections, fdSocket)
-	}
-	unix.EpollCtl(me.fd, unix.EPOLL_CTL_DEL, fdSocket, nil)
-
-	if close {
-		switch kind {
-		case FD:
-			unix.Close(fdSocket)
-
-		case CONN:
-			tcp.Close()
-
-		case LISTENER:
-			ltcp.Close()
-		}
-	}
-
-	me.Unlock()
+func (me *Epoll) Del(obj *UserObject) {
+	unix.EpollCtl(me.fd, unix.EPOLL_CTL_DEL, (*obj).GetFD(), nil)
 }
 
 // eventLoopSingleThread  => thread created when epoll.Create(1)
@@ -257,71 +85,26 @@ func (me *Epoll) eventLoopSingleThread() {
 			return
 		}
 
-		me.Lock()
-		if me.nthreads == 1 {
-			for _, ev := range evList {
+		for _, ev := range evList {
 
-				u64 = uint64(ev.Fd) + (uint64(ev.Pad) << 32)
-				uptr := uintptr(u64)
-				newConnection := (*Connection)(unsafe.Pointer(uptr))
-
-				var ret FuncAction
-				ret = newConnection.f(newConnection.connection, newConnection.customData)
-
-				if newConnection.oneshot || ret == STOP || ret == DESTROY {
-					me.Del(newConnection.connection, false)
-				}
-
-				if ret == DESTROY {
-					newConnection.Close()
-				}
-			}
+			u64 = uint64(ev.Fd) + (uint64(ev.Pad) << 32)
+			uptr := uintptr(u64)
+			obj := (*UserObject)(unsafe.Pointer(uptr))
+			(*obj).Event(ev.Events)
 		}
-		me.Unlock()
 	}
 }
 
 // EventLoopNoThread - event loop used directly by library user to handle events, no threads
 func (me *Epoll) EventLoopNoThread() {
 
-	var evList []unix.EpollEvent
-	evList = append(evList, unix.EpollEvent{})
-
-	var u64 uint64
-
-	for {
-
-		_, err := unix.EpollWait(me.fd, evList, -1)
-
-		if err != nil {
-			return
-		}
-
-		for _, ev := range evList {
-
-			u64 = uint64(ev.Fd) + (uint64(ev.Pad) << 32)
-			uptr := uintptr(u64)
-			newConnection := (*Connection)(unsafe.Pointer(uptr))
-
-			var ret FuncAction
-			ret = newConnection.f(newConnection.connection, newConnection.customData)
-
-			if newConnection.oneshot || ret == STOP || ret == DESTROY {
-				me.Del(newConnection.connection, false)
-			}
-
-			if ret == DESTROY {
-				newConnection.Close()
-			}
-		}
+	if me.nthreads == 0 {
+		me.eventLoopSingleThread()
 	}
 
 }
 
 // Destroy the epoll set
 func (me *Epoll) Destroy() {
-	me.Lock()
-	me.connections = nil
 	unix.Close(me.fd)
-	me.Unlock()
 }
